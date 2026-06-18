@@ -1,10 +1,13 @@
 import express from 'express';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const port = Number(process.env.PORT || 4173);
+const dataDir = path.join(__dirname, 'data');
+const playlistsPath = path.join(dataDir, 'playlists.json');
 
 const neteaseHeaders = {
   Referer: 'https://music.163.com/',
@@ -49,6 +52,52 @@ async function filterPlayableSongs(rawSongs, resultLimit) {
 }
 
 const app = express();
+app.use(express.json({ limit: '1mb' }));
+
+function createDefaultPlaylists() {
+  return [
+    { id: 'favorites', name: 'Favorites', songs: [] },
+    { id: 'visual-set', name: 'Visual Set', songs: [] },
+  ];
+}
+
+function normalizePlaylists(value) {
+  if (!Array.isArray(value) || value.length === 0) return createDefaultPlaylists();
+  return value.map((playlist) => ({
+    id: String(playlist.id || `playlist-${Date.now()}`),
+    name: String(playlist.name || 'Playlist'),
+    songs: Array.isArray(playlist.songs) ? playlist.songs : [],
+  }));
+}
+
+async function readPlaylistsFile() {
+  try {
+    const raw = await fs.readFile(playlistsPath, 'utf8');
+    return normalizePlaylists(JSON.parse(raw));
+  } catch (error) {
+    return createDefaultPlaylists();
+  }
+}
+
+async function writePlaylistsFile(playlists) {
+  await fs.mkdir(dataDir, { recursive: true });
+  const normalized = normalizePlaylists(playlists);
+  await fs.writeFile(playlistsPath, JSON.stringify(normalized, null, 2), 'utf8');
+  return normalized;
+}
+
+app.get('/api/playlists', async (_req, res) => {
+  res.json({ playlists: await readPlaylistsFile() });
+});
+
+app.put('/api/playlists', async (req, res) => {
+  try {
+    const playlists = await writePlaylistsFile(req.body?.playlists);
+    res.json({ playlists });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to save playlists' });
+  }
+});
 
 app.get('/api/netease/search', async (req, res) => {
   try {

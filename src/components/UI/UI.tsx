@@ -56,6 +56,10 @@ function readSavedPlaylists(): SavedPlaylist[] {
   }
 }
 
+function hasSavedSongs(playlists: SavedPlaylist[]): boolean {
+  return playlists.some((playlist) => playlist.songs.length > 0);
+}
+
 export function UI({ theme, onThemeChange }: UIProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const demoAudioUrl = '/demo.mp3';
@@ -83,10 +87,44 @@ export function UI({ theme, onThemeChange }: UIProps) {
   const [playQueue, setPlayQueue] = useState<NeteaseSong[]>([]);
   const [currentSongId, setCurrentSongId] = useState<number | null>(null);
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const hasLoadedPlaylistsRef = useRef(false);
 
   useEffect(() => {
+    if (!hasLoadedPlaylistsRef.current) return;
     window.localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlists));
+    fetch('/api/playlists', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playlists }),
+    }).catch((error) => {
+      console.warn('Unable to save playlists to local server:', error);
+    });
   }, [playlists]);
+
+  useEffect(() => {
+    const loadPlaylists = async () => {
+      try {
+        const response = await fetch('/api/playlists');
+        if (!response.ok) throw new Error('Playlist request failed');
+        const data = await response.json();
+        if (Array.isArray(data.playlists) && data.playlists.length > 0) {
+          const serverPlaylists = data.playlists;
+          const browserPlaylists = readSavedPlaylists();
+          if (!hasSavedSongs(serverPlaylists) && hasSavedSongs(browserPlaylists)) {
+            setPlaylists(browserPlaylists);
+          } else {
+            setPlaylists(serverPlaylists);
+          }
+        }
+      } catch (error) {
+        console.warn('Using browser playlist storage:', error);
+      } finally {
+        hasLoadedPlaylistsRef.current = true;
+      }
+    };
+
+    loadPlaylists();
+  }, []);
   
   // Audio state poller
   useEffect(() => {

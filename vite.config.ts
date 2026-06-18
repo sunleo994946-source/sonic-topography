@@ -1,5 +1,6 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import fs from 'node:fs/promises';
 import path from 'path';
 import {defineConfig} from 'vite';
 
@@ -12,11 +13,56 @@ const playableUrlCache = new Map<string, { url: string | null; expiresAt: number
 const searchCache = new Map<string, { songs: any[]; expiresAt: number }>();
 const playableUrlCacheTtl = 1000 * 60 * 10;
 const searchCacheTtl = 1000 * 60 * 5;
+const dataDir = path.resolve(__dirname, 'data');
+const playlistsPath = path.join(dataDir, 'playlists.json');
 
 function writeJson(res: any, status: number, data: unknown) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(data));
+}
+
+function createDefaultPlaylists() {
+  return [
+    { id: 'favorites', name: 'Favorites', songs: [] },
+    { id: 'visual-set', name: 'Visual Set', songs: [] },
+  ];
+}
+
+function normalizePlaylists(value: any) {
+  if (!Array.isArray(value) || value.length === 0) return createDefaultPlaylists();
+  return value.map((playlist: any) => ({
+    id: String(playlist.id || `playlist-${Date.now()}`),
+    name: String(playlist.name || 'Playlist'),
+    songs: Array.isArray(playlist.songs) ? playlist.songs : [],
+  }));
+}
+
+async function readPlaylistsFile() {
+  try {
+    const raw = await fs.readFile(playlistsPath, 'utf8');
+    return normalizePlaylists(JSON.parse(raw));
+  } catch (error) {
+    return createDefaultPlaylists();
+  }
+}
+
+async function writePlaylistsFile(playlists: any) {
+  await fs.mkdir(dataDir, { recursive: true });
+  const normalized = normalizePlaylists(playlists);
+  await fs.writeFile(playlistsPath, JSON.stringify(normalized, null, 2), 'utf8');
+  return normalized;
+}
+
+async function readRequestBody(req: any): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk: Buffer) => {
+      body += chunk.toString();
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
 }
 
 async function getNeteasePlayableUrl(id: string) {
@@ -55,6 +101,28 @@ function neteaseApiPlugin() {
   return {
     name: 'netease-api-proxy',
     configureServer(server: any) {
+      server.middlewares.use('/api/playlists', async (req: any, res: any, next: any) => {
+        try {
+          if (req.method === 'GET') {
+            writeJson(res, 200, { playlists: await readPlaylistsFile() });
+            return;
+          }
+
+          if (req.method === 'PUT') {
+            const body = await readRequestBody(req);
+            const parsed = body ? JSON.parse(body) : {};
+            const playlists = await writePlaylistsFile(parsed.playlists);
+            writeJson(res, 200, { playlists });
+            return;
+          }
+        } catch (error) {
+          writeJson(res, 500, { error: 'Unable to save playlists' });
+          return;
+        }
+
+        next();
+      });
+
       server.middlewares.use('/api/netease/search', async (req: any, res: any) => {
         try {
           const requestUrl = new URL(req.url || '', 'http://localhost');
